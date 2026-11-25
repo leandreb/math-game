@@ -142,6 +142,13 @@
       font-size: .78rem;
     }
 
+    .version {
+      margin: 14px 0 0;
+      color: var(--muted);
+      font-size: .72rem;
+      font-weight: 700;
+    }
+
     [hidden] { display: none !important; }
 
     .game-hud {
@@ -216,8 +223,12 @@
     }
 
     .answer {
+      display: flex;
+      align-items: center;
+      justify-content: center;
       aspect-ratio: 1;
       min-width: 0;
+      padding: 0;
       border: 2px solid var(--line);
       border-radius: 15px;
       color: var(--ink);
@@ -378,6 +389,7 @@
       </div>
       <button id="start-button" class="primary-button" type="button" disabled>Choisis ton prénom</button>
       <p id="storage-note" class="storage-note" role="status" aria-live="polite"></p>
+      <p class="version">Version 1</p>
     </section>
 
     <section id="play" hidden aria-label="Partie en cours">
@@ -417,6 +429,7 @@
     (() => {
       const ROUND_SECONDS = 5 * 60;
       const STORAGE_PREFIX = "math-game-high-score-";
+      const MISSED_PROBLEMS_PREFIX = "math-game-missed-problems-";
       const COLORS = ["#ff6b6b", "#ffb84d", "#55c99a", "#8b6ce0", "#4bb9e8", "#ff77a8"];
       const setup = document.querySelector("#setup");
       const play = document.querySelector("#play");
@@ -439,6 +452,9 @@
       let timerInterval = 0;
       let answerLocked = false;
       let gameActive = false;
+      let missedProblems = [];
+      let reviewProblems = [];
+      let currentProblem = null;
 
       function readHighScore(player) {
         try {
@@ -460,6 +476,62 @@
         }
       }
 
+      function isValidProblem(problem) {
+        if (!problem || !Number.isSafeInteger(problem.a) || !Number.isSafeInteger(problem.b)
+          || !Number.isSafeInteger(problem.answer) || problem.a < 0 || problem.a > 20
+          || problem.b < 0 || problem.b > 20) {
+          return false;
+        }
+        if (problem.operator === "+") {
+          return problem.a + problem.b <= 20 && problem.answer === problem.a + problem.b;
+        }
+        if (problem.operator === "-") {
+          return problem.b <= problem.a && problem.answer === problem.a - problem.b;
+        }
+        return false;
+      }
+
+      function sameProblem(first, second) {
+        return first.a === second.a && first.b === second.b && first.operator === second.operator;
+      }
+
+      function readMissedProblems(player) {
+        try {
+          const stored = localStorage.getItem(MISSED_PROBLEMS_PREFIX + player);
+          if (stored === null) return [];
+          const problems = JSON.parse(stored);
+          if (!Array.isArray(problems)) throw new Error("Invalid saved problems");
+          return problems.filter(isValidProblem);
+        } catch (error) {
+          storageNote.textContent = "Les réponses à retravailler ne peuvent pas être lues sur cet appareil.";
+          return [];
+        }
+      }
+
+      function saveMissedProblems(player) {
+        try {
+          localStorage.setItem(MISSED_PROBLEMS_PREFIX + player, JSON.stringify(missedProblems));
+          return true;
+        } catch (error) {
+          storageNote.textContent = "Les réponses à retravailler n'ont pas pu être enregistrées.";
+          return false;
+        }
+      }
+
+      function rememberMissedProblem(problem) {
+        if (missedProblems.some((missed) => sameProblem(missed, problem))) return;
+        missedProblems.push(problem);
+        saveMissedProblems(selectedPlayer);
+      }
+
+      function resolveMissedProblem(problem) {
+        const remaining = missedProblems.filter((missed) => !sameProblem(missed, problem));
+        if (remaining.length === missedProblems.length) return;
+        missedProblems = remaining;
+        reviewProblems = reviewProblems.filter((missed) => !sameProblem(missed, problem));
+        saveMissedProblems(selectedPlayer);
+      }
+
       function refreshRecords() {
         document.querySelector("#zozo-record").textContent = readHighScore("Zozo");
         document.querySelector("#gabi-record").textContent = readHighScore("Gabi");
@@ -477,18 +549,29 @@
       });
 
       function makeProblem() {
+        if (reviewProblems.length > 0) {
+          currentProblem = reviewProblems.shift();
+          correctAnswer = currentProblem.answer;
+          equationDisplay.textContent = `${currentProblem.a} ${currentProblem.operator === "+" ? "+" : "−"} ${currentProblem.b} = ?`;
+          return;
+        }
+
         const isAddition = Math.random() < 0.5;
         let a;
         let b;
+        let operator;
         if (isAddition) {
           a = Math.floor(Math.random() * 21);
           b = Math.floor(Math.random() * (21 - a));
+          operator = "+";
           correctAnswer = a + b;
         } else {
           a = Math.floor(Math.random() * 21);
           b = Math.floor(Math.random() * (a + 1));
+          operator = "-";
           correctAnswer = a - b;
         }
+        currentProblem = { a, b, operator, answer: correctAnswer };
         equationDisplay.textContent = `${a} ${isAddition ? "+" : "−"} ${b} = ?`;
       }
 
@@ -546,11 +629,13 @@
         if (chosenAnswer === correctAnswer) {
           score += 1;
           scoreDisplay.textContent = score;
+          resolveMissedProblem(currentProblem);
           button.classList.add("correct");
           feedback.textContent = "Bravo !";
           feedback.className = "feedback correct";
           window.setTimeout(nextProblem, 900);
         } else {
+          rememberMissedProblem(currentProblem);
           button.classList.add("wrong");
           feedback.textContent = `Oups ! La réponse était ${correctAnswer}.`;
           feedback.className = "feedback incorrect";
@@ -595,6 +680,8 @@
         gameCard.classList.add("is-playing");
         gameActive = true;
         answerLocked = false;
+        missedProblems = readMissedProblems(selectedPlayer);
+        reviewProblems = [...missedProblems];
         deadline = Date.now() + ROUND_SECONDS * 1000;
         buildAnswerGrid();
         nextProblem();
